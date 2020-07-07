@@ -1,0 +1,214 @@
+CR-APP on AWS
+=============
+
+
+
+REFERENCE: https://medium.com/@oreillyalan88/lamp-linux-apache-mysql-php-web-server-on-an-amazon-ec2-linux-instance-e37eb023e996
+**********
+
+
+I. Networking Part:
+-------------------
+
+
+1. Create a VPC
+2. Create an IGW & attach to VPC for (webservers)
+3. Create a Public RT --> 0.0.0.0/0 --> IGW
+4. Create a Public_Subnet-1 (10.0.1.0/24) in AZ-A, associate it to the Public RT
+5. Create a Public_Subnet-2 (10.0.2.0/24) in AZ-B, associate it to the Public RT
+ 
+6. Create a Private RT
+4. Create a Private_Subnet-1 (10.0.3.0/24) in AZ-A, associate it to the Private RT
+5. Create a Private_Subnet-2 (10.0.4.0/24) in AZ-B, associate it to the Private RT
+ 
+7.Create a Security Group for WebServers (cr-web-sg) --> http,ssh(from 0.0.0.0/0)
+8.Create a Security Group for DataBaseServers (cr-db-sg) --> mysql/Aurora(from sg-webservers)
+
+
+<<===============>>
+
+
+II. S3 Bucket & Adding Source files in it:
+------------------------------------------
+
+1. Create an S3 Bucket(cr-s3bucket) -> Public-Access-Yes
+2. 	
+	i.   Upload files(not folders ex: .index, .css, .php etc..) in the resources to the S3 Bucket Directly  --> publicAccess(Block), store in Standard, upload 
+	ii.  create folders(make sure exact names-No Spleiing/cases mistakes)
+		- css
+		    upload content of the css folder
+		- fonts
+		    upload content for fonts folder
+		- images
+		    upload images 
+		- js
+		    upload content for js folder
+
+
+<<===============>>
+
+
+
+III. IAM role:
+--------------
+
+1. Create a Policy
+	- IAM --> Policies --> Creat a Policy --> JSON(recommended)/ use AWS policy Generator (https://awspolicygen.s3.amazonaws.com/policygen.html)
+		
+		Here using AWS Ploicy Generator:
+		  -> Type of Policy(IAM Policy) --> Effect(Allow) --> actions (all Actions) --> S3 ARN(s3-bucket's ARN and s3-bucket's ARN/*)(first arn is for Accessing S3 bucket, and ARN/* is to access inside files entire bucket-Linux-wild card) (ex: arn:aws:s3:::cr-s3-bucket/*) --> generate Policy --> copy Json Code
+			
+						
+
+
+         -->Back to IAM Policy(Json's textarea) --> Modify Sid in the copied Json(give a meaningful name) --> paste that Code in IAM policy(Json's text area)
+		--> review Policy --> Name --> Description --> create Policy
+
+2. create a Role
+	- IAM --> Roles --> EC2(trusted Entity) --> Next to Permissions --> attach created Policy(select) --> Tag(for Role) --> name,decription --> create role
+
+
+
+
+<<===============>>
+
+
+IV. RDS Multi AZ in Private Subnet:
+-----------------------------------
+
+1. Create a Subnet Group with Private Subnets
+	
+	- RDS --> subnet groups --> VPC --> AZ(multi-AZ) A,B --> Subnets --> 2 Private DB subnets --> Create
+
+2. Create Data Bases:
+	- RDS --> Databases --> DB creation Method (Standard Create) --> Engine Type(MySQL) --> Version(select) --> Templates(Dev/Test) brcause Mult-AZ --> DB name(save Securrly for future use) --> Master username(save Securrly for future use) --> Master Password(save Securrly for future use)
+
+		DB name: crRDS  
+		Master username: admin
+		Master password: 92474163sri
+		DB End Point: cr-rds.c2klpvwl28qu.us-east-2.rds.amazonaws.com
+
+	--> instance size --> Burstable (t2-micro) --> storage(20GB) --> Auto Sclaing for Storage(NO) --> Multi AZ(Yes) --> connectivity(select VPC) -->  additional settings --> select subnet group(we created) --> Publicly Accesable(NO) --> Security group(give created DB-Server-SG) --> port(3306) --> Password Authentication --> additional config -> Name -> retentionBackup(YES-1day) --> Monitoring(disable) --> Create  
+
+        	--> Copy/Save RDS-DB's End Point name
+			- RDS --> Databases(select) --> connectivity and security --> End Point
+		
+		--> Copy/save DB name --> onfiguration --> DB name 
+
+
+				
+<<===============>>
+
+
+V. Configure ELB:
+------------------
+
+1. Create a Load Balancer
+	- Ec2 Dashboard --> Load Balancers --> Classic Load Balancer --> name,VPC --> ListnerConfig: http(used here)/https(recommended) --> select subnets(public subnets 1,2) --> Securty groups(port (http)80,0.0.0.0/0) --> health check http,80,/health.html --> time 2,5,2,3 --> add EC2 instances(leave for now - will do through Auto Scaling) crossZone Load Balancing(to distribute equal load to all EC2s irrespective to AZs/Subnets --> connection draining time-in-Flight-traffic(300 secs) --> Tags --> create 
+
+	- Copy/Save DNS name for route53 
+		
+		DNS name: cr-ELB-1500801541.us-east-2.elb.amazonaws.com
+
+
+<<===============>>
+
+VI. Create an Health Check file in S3 for ELB-Health Checking:
+--------------------------------------------------------------
+
+1. create a file with name as health in note pad and write something to it. ex: (this is an Health Check File for ELB)
+	Save it as health.html (we gave this name in ELB healthcheck config)
+
+2. upload it to Our S3 Bucket
+ 
+
+
+
+<<===============>>
+
+
+VII. update db.php in Resources:
+---------------------------------
+
+1. Update db.php in Resources with our RDS DB server Access Details(dbName,MasterUser,MasterPassword,dbEndPoint)
+
+	open db.php in note pad and edit:
+		
+		'DB_SERVER', 'cr-rds.c2klpvwl28qu.us-east-2.rds.amazonaws.com'  --> DB end point
+		'DB_USERNAME', 'admin'  --> MasterUser
+		'DB_PASSWORD', '92474163sri'  --> Master Password
+		'DB_DATABASE', 'crRDS'  --> DB name
+
+2. Upload it to S3 Bucket (when you upload it old one will be gone automatically (just it updates the old file)
+
+
+<<======================>>
+
+
+
+VIII. Auto Scaling with(AMI-with Bootstrap):
+------------------------------------------
+
+1.  - Ec2 DashBoard --> Auto Scaling --> Auto Scaling group --> Launch Configuration --> select AMI(Amazon Linux AMI 2018.03.0) --> instancetype(t2.micro)  --> configuration details(name,  attach IAM-ROLE(we created) -->  user data 
+
+	user data:
+			
+#!/bin/bash
+yum update -y
+yum install -y httpd24 php70 mysql56-server php70-mysqlnd
+service httpd start
+chkconfig httpd on
+sudo usermod -a -G apache ec2-user
+groups
+chown -R ec2-user:apache /var/www
+chmod 2775 /var/www
+find /var/www -type d -exec sudo chmod 2775 {} \;
+find /var/www -type f -exec sudo chmod 0664 {} \;
+echo "<?php phpinfo(); ?>" > /var/www/html/phpinfo.php
+aws s3 cp s3://s3_bucketName /var/www/html --recursive
+
+
+
+	-> Select(Assign a public IP address to every instance) --> add storage -->  Security groups (Web-SG) --> Done 
+
+
+2. Create an Austo Scaling
+	-> Name --> number of instances start with --> VPC --> Subnets(2 Public subnets)
+
+**IMPORTANT**
+--------------
+	
+	Attach ELB to the Auto Scaling by enabling Load Balancing checkBox in AutoScaling Advanced Details
+		- Select our ELB --> Health check (ELB) i.e., from ELB it checks file for health.html in S3 bucket --> healthcheck grace period
+
+		- Configure Scaling Policies(Use Scaling Policies to adjust the capacity of this group) 
+			-> Scale b/w 1-4 Ec2s --> 
+
+			name(Scale gorup Size) --> MetricType Avg CPU utilization --> Target value(80)
+		
+		- Config Notifications
+
+		- Configure Tags
+		- Review --> Launch
+
+
+TEST-RESULT:
+============
+
+1. Take your ELB End Point and search in your Browser --> should get Apache page
+2. Now for you ELB End point add /customer-recipe.html
+
+	Example: http://cr-elb-1500801541.us-east-2.elb.amazonaws.com/customer-recipe.html
+
+<<======================>>
+
+
+REFERENCE: https://medium.com/@oreillyalan88/lamp-linux-apache-mysql-php-web-server-on-an-amazon-ec2-linux-instance-e37eb023e996
+**********
+
+________DONE___________
+ 
+ 
+
+	
+
